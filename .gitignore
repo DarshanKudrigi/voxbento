@@ -36,3 +36,9 @@ static/audio/demo/
 
 .gemini/
 gha-creds-*.json
+
+
+
+#SQL Lite
+*.db-shm
+*.db-wal
