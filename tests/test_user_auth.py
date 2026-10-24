@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -467,10 +471,6 @@ class TestUserLogin:
 
     @pytest.mark.anyio
     async def test_login_page_renders_accessible_password_toggle(self, setup_db):
-        import shutil
-        import subprocess
-        from pathlib import Path
-
         async with _client() as c:
             resp = await c.get("/login")
         assert resp.status_code == 200
@@ -482,13 +482,16 @@ class TestUserLogin:
             '<input type="password" id="password" name="password" placeholder="Enter your password" required' in content
         )
 
-        # 2. Toggle button has type="button", accessible name, aria-controls and aria-pressed
-        assert 'id="toggle-password"' in content
+        # 2. Toggle button has type="button", accessible name, and aria-controls
+        toggle_btn_match = re.search(r'<button\b[^>]*id=["\']toggle-password["\'][^>]*>', content)
+        assert toggle_btn_match is not None, "Toggle button #toggle-password not found in rendered HTML"
+        assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+            "Rendered toggle button must have type='button' to prevent form submission"
+        )
         assert 'class="password-toggle-btn"' in content
         assert 'aria-label="Show password"' in content
         assert 'title="Show password"' in content
         assert 'aria-controls="password"' in content
-        assert 'aria-pressed="false"' in content
 
         # 3. Eye icons are rendered with aria-hidden="true" and hide icon starts hidden
         assert "password-toggle-icon--show" in content
@@ -515,7 +518,7 @@ class TestUserLogin:
         if node_bin:
             test_file = Path(__file__).resolve().parent / "test_password_toggle.js"
             res = subprocess.run([node_bin, str(test_file)], capture_output=True, text=True, check=True)
-            assert "Password Toggle tests completed: 23 passed, 0 failed" in res.stdout
+            assert "Password Toggle tests completed: 22 passed, 0 failed" in res.stdout
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):

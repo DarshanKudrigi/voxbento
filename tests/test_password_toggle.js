@@ -3,6 +3,7 @@
  *
  * Run with: node tests/test_password_toggle.js
  */
+import fs from 'fs';
 import { setupPasswordToggle } from '../portal/static/js/login.js';
 
 let passed = 0;
@@ -74,7 +75,14 @@ function createMockElement(tagName, attrs = {}) {
 
 console.log('Running Password Toggle tests...');
 
-// Test 1: Hidden by default
+// Test 1: Check rendered template button attributes
+const templateHtml = fs.readFileSync('portal/templates/login.html', 'utf-8');
+const toggleBtnTagMatch = templateHtml.match(/<button\b[^>]*id=["']toggle-password["'][^>]*>/i);
+assert(toggleBtnTagMatch !== null, 'Toggle button is defined in login.html');
+assert(/\btype=["']button["']/i.test(toggleBtnTagMatch[0]), 'Rendered toggle button in login.html has type="button" to prevent form submission');
+assert(/\baria-label=["']Show password["']/i.test(toggleBtnTagMatch[0]), 'Rendered toggle button has aria-label="Show password" by default');
+
+// Test 2: Hidden by default in DOM state
 const showIcon = createMockElement('svg', {
   className: 'password-toggle-icon password-toggle-icon--show',
 });
@@ -89,7 +97,6 @@ const toggleBtn = createMockElement('button', {
   type: 'button',
   'aria-label': 'Show password',
   title: 'Show password',
-  'aria-pressed': 'false',
 });
 toggleBtn._showIcon = showIcon;
 toggleBtn._hideIcon = hideIcon;
@@ -97,35 +104,31 @@ toggleBtn._hideIcon = hideIcon;
 setupPasswordToggle(passwordInput, toggleBtn);
 
 assert(passwordInput.type === 'password', 'Password is hidden by default (type="password")');
-assert(toggleBtn.type === 'button', 'Toggle button uses type="button" to prevent form submission');
 assert(toggleBtn.getAttribute('aria-label') === 'Show password', 'Accessible name is "Show password" by default');
-assert(toggleBtn.getAttribute('aria-pressed') === 'false', 'aria-pressed is false by default');
 assert(!showIcon.classList.contains('hidden'), 'Show eye icon is visible by default');
 assert(hideIcon.classList.contains('hidden'), 'Hide eye icon is hidden by default');
 
-// Test 2: First click reveals password
+// Test 3: First click reveals password
 const prevented1 = toggleBtn.click();
 assert(prevented1, 'Click event prevents default action');
 assert(passwordInput.type === 'text', 'Clicking reveals password (type="text")');
 assert(passwordInput.value === 'myP@ssw0rd!#', 'Password value is preserved after revealing');
 assert(toggleBtn.getAttribute('aria-label') === 'Hide password', 'Accessible name updates to "Hide password"');
 assert(toggleBtn.getAttribute('title') === 'Hide password', 'Title updates to "Hide password"');
-assert(toggleBtn.getAttribute('aria-pressed') === 'true', 'aria-pressed updates to "true"');
 assert(showIcon.classList.contains('hidden'), 'Show eye icon is hidden when password is visible');
 assert(!hideIcon.classList.contains('hidden'), 'Hide eye icon is visible when password is visible');
 
-// Test 3: Second click hides password again
+// Test 4: Second click hides password again
 const prevented2 = toggleBtn.click();
 assert(prevented2, 'Second click event prevents default action');
 assert(passwordInput.type === 'password', 'Clicking again hides password (type="password")');
 assert(passwordInput.value === 'myP@ssw0rd!#', 'Password value is preserved after hiding');
 assert(toggleBtn.getAttribute('aria-label') === 'Show password', 'Accessible name reverts to "Show password"');
 assert(toggleBtn.getAttribute('title') === 'Show password', 'Title reverts to "Show password"');
-assert(toggleBtn.getAttribute('aria-pressed') === 'false', 'aria-pressed reverts to "false"');
 assert(!showIcon.classList.contains('hidden'), 'Show eye icon is visible again');
 assert(hideIcon.classList.contains('hidden'), 'Hide eye icon is hidden again');
-``
-// Test 4: Gracefully handles missing elements
+
+// Test 5: Gracefully handles missing elements
 let threw = false;
 try {
   setupPasswordToggle(null, null);

@@ -64,7 +64,6 @@ export function setupPasswordToggle(passwordInput, toggleBtn) {
     const newLabel = isPassword ? 'Hide password' : 'Show password';
     toggleBtn.setAttribute('aria-label', newLabel);
     toggleBtn.setAttribute('title', newLabel);
-    toggleBtn.setAttribute('aria-pressed', isPassword ? 'true' : 'false');
 
     if (showIcon && hideIcon) {
       showIcon.classList.toggle('hidden', isPassword);
