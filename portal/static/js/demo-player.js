@@ -212,7 +212,7 @@ function playActiveAudio(audio, resetTime = false) {
     if (playPromise !== undefined) {
         playPromise.catch((err) => {
             console.error("[demo-player] play failed:", err);
-            if (audio._playbackSession === playbackSession) {
+            if (session === playbackSession) {
                 playbackSession++;
                 setPlayState(false);
                 stopCaptionTimer();
