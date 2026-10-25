@@ -51,7 +51,7 @@ function initCrossTabAuth() {
   }
 }
 
-export function setupPasswordToggle(passwordInput, toggleBtn) {
+function setupPasswordToggle(passwordInput, toggleBtn) {
   if (!passwordInput || !toggleBtn) return;
 
   const showIcon = toggleBtn.querySelector('.password-toggle-icon--show');
@@ -241,3 +241,11 @@ if (typeof document !== 'undefined') {
     initLogin();
   }
 }
+
+if (typeof window !== 'undefined') {
+  window.setupPasswordToggle = setupPasswordToggle;
+}
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { setupPasswordToggle };
+}
+

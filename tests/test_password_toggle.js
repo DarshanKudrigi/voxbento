@@ -3,8 +3,8 @@
  *
  * Run with: node tests/test_password_toggle.js
  */
-import fs from 'fs';
-import { setupPasswordToggle } from '../portal/static/js/login.js';
+const fs = require('fs');
+const { setupPasswordToggle } = require('../portal/static/js/login.js');
 
 let passed = 0;
 let failed = 0;

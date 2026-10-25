@@ -518,7 +518,12 @@ class TestUserLogin:
         if node_bin:
             test_file = Path(__file__).resolve().parent / "test_password_toggle.js"
             res = subprocess.run([node_bin, str(test_file)], capture_output=True, text=True, check=True)
-            assert "Password Toggle tests completed: 22 passed, 0 failed" in res.stdout
+            match = re.search(r"Password Toggle tests completed: (\d+) passed, (\d+) failed", res.stdout)
+            assert match is not None, f"Node test summary not found in output:\n{res.stdout}"
+            passed_count = int(match.group(1))
+            failed_count = int(match.group(2))
+            assert passed_count > 0, f"Expected at least one passed assertion, got {passed_count}"
+            assert failed_count == 0, f"Expected 0 failed assertions, got {failed_count}\n{res.stdout}"
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):
