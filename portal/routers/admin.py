@@ -1383,9 +1383,13 @@ def _sanitize_draft_token(raw_token: str | None) -> str:
     if not raw_token or not isinstance(raw_token, str):
         return ""
     token = raw_token.strip()
-    if _SAFE_DRAFT_TOKEN_RE.fullmatch(token):
-        return token
-    return ""
+    if not (1 <= len(token) <= 64):
+        return ""
+    if not all(c.isalnum() or c in ("-", "_") for c in token):
+        return ""
+    if not _SAFE_DRAFT_TOKEN_RE.fullmatch(token):
+        return ""
+    return token
 
 
 def _room_creation_success_response(
@@ -1405,11 +1409,19 @@ def _room_creation_success_response(
 
     response = safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
     if from_setup:
-        safe_event_id = urllib.parse.quote(str(int(event_id)), safe="")
-        quoted_token = urllib.parse.quote(sanitized_token, safe="")
-        cookie_val = f"{safe_event_id}:{quoted_token}" if quoted_token else safe_event_id
-        response.set_cookie("room_created_token", cookie_val, max_age=60, path="/", httponly=False, samesite="lax")
-        response.set_cookie("room_created", safe_event_id, max_age=60, path="/", httponly=False, samesite="lax")
+        event_id_int = int(event_id)
+        safe_event_id = str(event_id_int)
+        if not safe_event_id.isdigit():
+            safe_event_id = ""
+        clean_token = (
+            sanitized_token
+            if (sanitized_token and all(c.isalnum() or c in ("-", "_") for c in sanitized_token))
+            else ""
+        )
+        cookie_val = f"{safe_event_id}:{clean_token}" if clean_token else safe_event_id
+        if safe_event_id:
+            response.set_cookie("room_created_token", cookie_val, max_age=60, path="/", httponly=False, samesite="lax")
+            response.set_cookie("room_created", safe_event_id, max_age=60, path="/", httponly=False, samesite="lax")
     return response
 
 
@@ -1708,8 +1720,29 @@ async def admin_event_detail(request: Request, event_id: int):
         mem_booth = booths.get_booth_sync(bid)
         is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
         booth_statuses.append({"db": b, "booth_id": bid, "is_live": is_live})
-    setup_finished = bool(request.query_params.get("setup_finished"))
-    return templates.TemplateResponse(
+    raw_setup_finished = request.query_params.get("setup_finished")
+    if raw_setup_finished in {"1", "true", "yes"}:
+        remaining_params = dict(request.query_params)
+        remaining_params.pop("setup_finished", None)
+        target = management_url(request, f"events/{event_id}/")
+        if remaining_params:
+            target += f"?{urllib.parse.urlencode(remaining_params)}"
+        response = safe_redirect(url=target, status_code=status.HTTP_303_SEE_OTHER)
+        safe_event_id = str(int(event_id))
+        if safe_event_id.isdigit():
+            response.set_cookie(
+                "setup_finished",
+                safe_event_id,
+                max_age=60,
+                path="/",
+                httponly=False,
+                samesite="lax",
+            )
+        return response
+
+    setup_finished_cookie = request.cookies.get("setup_finished")
+    setup_finished = setup_finished_cookie == str(event_id)
+    response = templates.TemplateResponse(
         request=request,
         name="admin/event_detail.html",
         context={
@@ -1722,6 +1755,9 @@ async def admin_event_detail(request: Request, event_id: int):
             **admin_flags,
         },
     )
+    if setup_finished:
+        response.delete_cookie("setup_finished", path="/", samesite="lax")
+    return response
 
 
 @router.get("/admin/events/{event_id}/caption-overlays/", dependencies=[Depends(require_event_owner)])
