@@ -1379,17 +1379,43 @@ async def admin_room_setup_new(request: Request, event_id: int, source: str | No
 _SAFE_DRAFT_TOKEN_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
-def _sanitize_draft_token(raw_token: str | None) -> str:
-    if not raw_token or not isinstance(raw_token, str):
+def _clean_token_chars(token: str | None) -> str:
+    if not token or not isinstance(token, str):
         return ""
-    token = raw_token.strip()
+    token = token.strip()
     if not (1 <= len(token) <= 64):
         return ""
-    if not all(c.isalnum() or c in ("-", "_") for c in token):
+    cleaned = []
+    for ch in token:
+        code = ord(ch)
+        if (48 <= code <= 57) or (65 <= code <= 90) or (97 <= code <= 122) or code in (45, 95):
+            cleaned.append(chr(code))
+        else:
+            return ""
+    return "".join(cleaned)
+
+
+def _clean_numeric_id(val: int | str | None) -> str:
+    if val is None:
         return ""
-    if not _SAFE_DRAFT_TOKEN_RE.fullmatch(token):
+    try:
+        num = int(val)
+        if num <= 0:
+            return ""
+    except (ValueError, TypeError):
         return ""
-    return token
+    cleaned = []
+    for ch in str(num):
+        code = ord(ch)
+        if 48 <= code <= 57:
+            cleaned.append(chr(code))
+        else:
+            return ""
+    return "".join(cleaned)
+
+
+def _sanitize_draft_token(raw_token: str | None) -> str:
+    return _clean_token_chars(raw_token)
 
 
 def _room_creation_success_response(
@@ -1409,15 +1435,8 @@ def _room_creation_success_response(
 
     response = safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
     if from_setup:
-        event_id_int = int(event_id)
-        safe_event_id = str(event_id_int)
-        if not safe_event_id.isdigit():
-            safe_event_id = ""
-        clean_token = (
-            sanitized_token
-            if (sanitized_token and all(c.isalnum() or c in ("-", "_") for c in sanitized_token))
-            else ""
-        )
+        safe_event_id = _clean_numeric_id(event_id)
+        clean_token = _clean_token_chars(sanitized_token)
         cookie_val = f"{safe_event_id}:{clean_token}" if clean_token else safe_event_id
         if safe_event_id:
             response.set_cookie("room_created_token", cookie_val, max_age=60, path="/", httponly=False, samesite="lax")
@@ -1728,8 +1747,8 @@ async def admin_event_detail(request: Request, event_id: int):
         if remaining_params:
             target += f"?{urllib.parse.urlencode(remaining_params)}"
         response = safe_redirect(url=target, status_code=status.HTTP_303_SEE_OTHER)
-        safe_event_id = str(int(event_id))
-        if safe_event_id.isdigit():
+        safe_event_id = _clean_numeric_id(event_id)
+        if safe_event_id:
             response.set_cookie(
                 "setup_finished",
                 safe_event_id,
