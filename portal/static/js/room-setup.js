@@ -61,7 +61,9 @@ export function buildDraftFromForm({
     const d = deliveryOf(code);
     if (d) deliveries[code] = d;
   });
+  const submissionInput = form?.querySelector('#rs-submission-id') || form?.querySelector('input[name="submission_id"]');
   return {
+    submissionId: submissionInput?.value ? submissionInput.value.trim() : '',
     roomName: form?.querySelector('#rs-name')?.value || '',
     spokenLanguage: spokenSelect?.value || '',
     listenerLanguages: chosenCodes,
@@ -83,6 +85,10 @@ export function applyDraftToForm({
   addChip = () => {},
 }) {
   if (!draft || typeof draft !== 'object') return;
+  const submissionInput = form?.querySelector('#rs-submission-id') || form?.querySelector('input[name="submission_id"]');
+  if (submissionInput && typeof draft.submissionId === 'string' && draft.submissionId.trim()) {
+    submissionInput.value = draft.submissionId.trim();
+  }
   const nameInput = form?.querySelector('#rs-name');
   if (nameInput && typeof draft.roomName === 'string') {
     nameInput.value = draft.roomName;
@@ -564,6 +570,11 @@ if (root && form) {
     try {
       const draft = loadRoomDraft(sessionStorage, draftKey);
       if (!draft || typeof draft !== 'object') return false;
+
+      const submissionInput = form.querySelector('#rs-submission-id') || form.querySelector('input[name="submission_id"]');
+      if (submissionInput && typeof draft.submissionId === 'string' && draft.submissionId.trim()) {
+        submissionInput.value = draft.submissionId.trim();
+      }
 
       const nameInput = form.querySelector('#rs-name');
       if (nameInput && typeof draft.roomName === 'string' && draft.roomName) {

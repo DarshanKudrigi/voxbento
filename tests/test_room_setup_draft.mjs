@@ -87,6 +87,7 @@ class FakeElement {
 
 // Build initial source form
 const sourceForm = new FakeElement();
+sourceForm.children.set('#rs-submission-id', new FakeInput('sub-token-uuid-12345'));
 sourceForm.children.set('#rs-name', new FakeInput('Main Stage'));
 sourceForm.children.set('#rs-speech', new FakeInput('local'));
 sourceForm.children.set('#rs-translation', new FakeInput('local'));
@@ -109,6 +110,7 @@ const generatedDraft = buildDraftFromForm({
 });
 
 // Verify draft contains all expected fields
+assert.equal(generatedDraft.submissionId, 'sub-token-uuid-12345');
 assert.equal(generatedDraft.roomName, 'Main Stage');
 assert.equal(generatedDraft.spokenLanguage, 'en');
 assert.deepEqual(generatedDraft.listenerLanguages, ['es', 'fr', 'de']);
@@ -125,6 +127,7 @@ saveRoomDraft(mockStorage, key7, generatedDraft);
 
 // 3. Test restoration via applyDraftToForm into a fresh DOM form
 const targetForm = new FakeElement();
+targetForm.children.set('#rs-submission-id', new FakeInput('initial-fresh-id'));
 targetForm.children.set('#rs-name', new FakeInput(''));
 targetForm.children.set('#rs-speech', new FakeSelect('auto', ['auto', 'local', 'whisper']));
 targetForm.children.set('#rs-translation', new FakeSelect('auto', ['auto', 'local']));
@@ -166,6 +169,7 @@ applyDraftToForm({
 });
 
 // Assertions on restored form fields
+assert.equal(targetForm.querySelector('#rs-submission-id').value, 'sub-token-uuid-12345');
 assert.equal(targetForm.querySelector('#rs-name').value, 'Main Stage');
 assert.equal(targetSpokenSelect.value, 'en');
 assert.equal(targetForm.querySelector('#rs-speech').value, 'local');
@@ -184,6 +188,17 @@ assert.equal(deInput?.checked, true);
 // Unavailable code 'xx' was NOT added as a chip
 assert.equal(addedChips.some((c) => c.code === 'xx'), false);
 assert.equal(chipsBox.querySelector('[data-rs-chip="xx"] input'), null);
+
+// Legacy draft without submissionId must preserve the fresh form submissionId
+const formWithFreshId = new FakeElement();
+formWithFreshId.children.set('#rs-submission-id', new FakeInput('keep-this-fresh-id'));
+applyDraftToForm({
+  form: formWithFreshId,
+  draft: { roomName: 'Legacy Draft' },
+  chipsBox: new FakeElement(),
+  spokenSelect: new FakeSelect('auto', ['auto']),
+});
+assert.equal(formWithFreshId.querySelector('#rs-submission-id').value, 'keep-this-fresh-id');
 
 // 4. Event isolation
 const key8 = getDraftStorageKey(true, true, '8');
