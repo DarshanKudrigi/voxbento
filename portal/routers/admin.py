@@ -787,20 +787,33 @@ def _sanitize_setup_return_to(return_to: str | None, event_id: int | None = None
     return cleaned
 
 
+@dataclass(frozen=True)
+class _RoomCreationOutcome:
+    room_id: int | None = None
+    event: Event | None = None
+    plan: RoomPlan | None = None
+    catalog: EngineCatalog | None = None
+    errors: Sequence[str] = ()
+
+    @property
+    def is_success(self) -> bool:
+        return self.room_id is not None
+
+
 _recent_room_creations: dict[tuple[int, str], int] = {}
-_in_flight_room_creations: dict[tuple[int, str], asyncio.Future[int]] = {}
+_in_flight_room_creations: dict[tuple[int, str], asyncio.Future[_RoomCreationOutcome]] = {}
 
 
-@router.get("/admin/setup")
-async def admin_setup_start(
-    request: Request,
-    event_id: int | None = Query(None, alias="eventId"),
-    return_to: str | None = Query(None),
-):
-    if event_id is None:
-        raw_id = request.query_params.get("event_id")
-        if raw_id and raw_id.isdigit():
-            event_id = int(raw_id)
+async def require_setup_access(request: Request) -> None:
+    raw_event_id = request.query_params.get("eventId") or request.query_params.get("event_id")
+    event_id: int | None = int(raw_event_id) if raw_event_id and raw_event_id.isdigit() else None
+    if event_id is None and request.method.upper() == "POST":
+        content_type = request.headers.get("content-type", "").lower()
+        if content_type.startswith(("application/x-www-form-urlencoded", "multipart/form-data")):
+            form = await request.form()
+            raw_form_id = form.get("event_id") or form.get("eventId")
+            if raw_form_id and str(raw_form_id).isdigit():
+                event_id = int(raw_form_id)
 
     async with get_session() as session:
         principal = await resolve_request_principal(request, session)
@@ -809,13 +822,9 @@ async def admin_setup_start(
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
             raise RedirectRequired(f"/login?next={request.url.path}")
 
-        event = None
         if event_id is not None:
             if not principal.get("is_admin") and event_id not in principal.get("owned_event_ids", set()):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event owner access required.")
-            event = await get_event_by_id(session, event_id)
-            if event is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
         else:
             if not principal.get("is_admin"):
                 if principal.get("hosting_revoked_at") is not None:
@@ -826,6 +835,25 @@ async def admin_setup_start(
                     if "application/json" in request.headers.get("accept", "") or request.url.path.startswith("/api/"):
                         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hosting access required.")
                     raise RedirectRequired("/account?error=hosting_access_required")
+
+
+@router.get("/admin/setup", dependencies=[Depends(require_setup_access)])
+async def admin_setup_start(
+    request: Request,
+    event_id: int | None = Query(None, alias="eventId"),
+    return_to: str | None = Query(None),
+):
+    if event_id is None:
+        raw_id = request.query_params.get("event_id")
+        if raw_id and raw_id.isdigit():
+            event_id = int(raw_id)
+
+    event = None
+    if event_id is not None:
+        async with get_session() as session:
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
 
     admin_flags = await get_access_flags(request, event_id=event_id)
     if not getattr(request.state, "is_workspace", False) and not admin_flags.get("is_admin"):
@@ -845,7 +873,7 @@ async def admin_setup_start(
     return templates.TemplateResponse(request=request, name="admin/wizard_event.html", context=context)
 
 
-@router.post("/admin/setup", dependencies=[Depends(require_admin_csrf)])
+@router.post("/admin/setup", dependencies=[Depends(require_setup_access), Depends(require_admin_csrf)])
 async def admin_setup_create_event(
     request: Request,
     event_id_query: int | None = Query(None, alias="eventId"),
@@ -1271,10 +1299,11 @@ def _room_creation_success_response(
 
     response = safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
     if from_setup:
+        safe_event_id = urllib.parse.quote(str(int(event_id)), safe="")
         quoted_token = urllib.parse.quote(sanitized_token, safe="")
-        cookie_val = f"{event_id}:{quoted_token}" if quoted_token else str(event_id)
+        cookie_val = f"{safe_event_id}:{quoted_token}" if quoted_token else safe_event_id
         response.set_cookie("room_created_token", cookie_val, max_age=60, path="/", httponly=False, samesite="lax")
-        response.set_cookie("room_created", str(event_id), max_age=60, path="/", httponly=False, samesite="lax")
+        response.set_cookie("room_created", safe_event_id, max_age=60, path="/", httponly=False, samesite="lax")
     return response
 
 
@@ -1298,8 +1327,32 @@ async def admin_room_setup_create(request: Request, event_id: int):
                 from_setup=from_setup,
                 setup_draft_token=setup_draft_token,
             )
-        if claim_key in _in_flight_room_creations:
-            existing_room_id = await _in_flight_room_creations[claim_key]
+        in_flight_fut = _in_flight_room_creations.get(claim_key)
+        if in_flight_fut is not None:
+            outcome = await asyncio.shield(in_flight_fut)
+            if outcome.is_success:
+                return _room_creation_success_response(
+                    request,
+                    event_id=event_id,
+                    room_id=outcome.room_id,
+                    from_setup=from_setup,
+                    setup_draft_token=setup_draft_token,
+                )
+            admin_flags = await get_access_flags(request, event_id=event_id)
+            return _room_setup_response(
+                request,
+                event=outcome.event,
+                room=None,
+                plan=outcome.plan,
+                catalog=outcome.catalog,
+                admin_flags=admin_flags,
+                errors=outcome.errors,
+                from_setup=from_setup,
+                submission_id=submission_id,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        if claim_key in _recent_room_creations:
+            existing_room_id = _recent_room_creations[claim_key]
             return _room_creation_success_response(
                 request,
                 event_id=event_id,
@@ -1322,8 +1375,14 @@ async def admin_room_setup_create(request: Request, event_id: int):
             catalog = engine_catalog(event)
             plan, errors = parse_plan(form, catalog)
             if errors:
+                outcome = _RoomCreationOutcome(
+                    event=event,
+                    plan=plan,
+                    catalog=catalog,
+                    errors=errors,
+                )
                 if fut and not fut.done():
-                    fut.set_exception(ValueError("Room validation error"))
+                    fut.set_result(outcome)
                 admin_flags = await get_access_flags(request, event_id=event_id)
                 return _room_setup_response(
                     request,
@@ -1352,7 +1411,7 @@ async def admin_room_setup_create(request: Request, event_id: int):
                 for k in list(_recent_room_creations.keys())[:100]:
                     _recent_room_creations.pop(k, None)
             if fut and not fut.done():
-                fut.set_result(room_id)
+                fut.set_result(_RoomCreationOutcome(room_id=room_id))
 
     except BaseException as exc:
         if fut and not fut.done():

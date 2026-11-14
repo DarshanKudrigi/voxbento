@@ -555,6 +555,195 @@ async def test_concurrent_overlapping_room_submissions_create_only_one_room(admi
 
 
 @pytest.mark.anyio
+async def test_concurrent_room_submission_waiter_cancellation_preserves_shared_future(admin_cookie):
+    """Test 1: Cancelling one waiter does not cancel the shared Future; remaining waiter succeeds."""
+    import asyncio
+    from unittest.mock import patch
+
+    import portal.routers.admin as admin_module
+
+    async with get_session() as s:
+        ev = await create_event(s, slug="cancellation-room-test", display_name="Cancellation Test")
+        event_id = ev.id
+
+    data = {
+        "from": "setup",
+        "display_name": "Cancelled Waiter Room",
+        "spoken_language": "en",
+        "languages": ["es"],
+        "delivery_es": "interpreter",
+        "submission_id": "sub-cancel-12345",
+    }
+
+    real_apply_plan = admin_module.apply_plan
+
+    async def delayed_apply_plan(*args, **kwargs):
+        await asyncio.sleep(0.3)
+        return await real_apply_plan(*args, **kwargs)
+
+    claim_key = (event_id, "sub-cancel-12345")
+
+    async with _client() as client:
+        with patch.object(admin_module, "apply_plan", side_effect=delayed_apply_plan):
+            # 1. Start creator
+            creator_task = asyncio.create_task(
+                client.post(
+                    f"/admin/events/{event_id}/rooms/new",
+                    data=data,
+                    headers={"origin": "http://test"},
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+            )
+            # Give creator time to acquire claim_key and register in _in_flight_room_creations
+            for _ in range(100):
+                if claim_key in admin_module._in_flight_room_creations:
+                    break
+                await asyncio.sleep(0.01)
+            assert claim_key in admin_module._in_flight_room_creations
+            shared_fut = admin_module._in_flight_room_creations[claim_key]
+
+            # 2. Start two waiters
+            waiter1_task = asyncio.create_task(
+                client.post(
+                    f"/admin/events/{event_id}/rooms/new",
+                    data=data,
+                    headers={"origin": "http://test"},
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+            )
+            waiter2_task = asyncio.create_task(
+                client.post(
+                    f"/admin/events/{event_id}/rooms/new",
+                    data=data,
+                    headers={"origin": "http://test"},
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+            )
+            # Give waiters time to bootstrap CSRF and begin awaiting the shared future
+            await asyncio.sleep(0.05)
+
+            # 3. Cancel waiter 1
+            waiter1_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter1_task
+
+            # Shared future must NOT be cancelled
+            assert not shared_fut.cancelled()
+
+            # Waiter 2 and Creator must both complete successfully
+            resp_creator = await creator_task
+            resp_waiter2 = await waiter2_task
+
+            assert resp_creator.status_code == 303
+            assert resp_waiter2.status_code == 303
+            assert resp_creator.headers["location"] == resp_waiter2.headers["location"]
+
+    # 4. Verify in-flight cleanup and database record
+    assert claim_key not in admin_module._in_flight_room_creations
+    async with get_session() as s:
+        rooms = await list_rooms_for_event(s, event_id)
+        assert len(rooms) == 1
+
+
+@pytest.mark.anyio
+async def test_concurrent_room_submission_validation_failure_shared_with_waiters(admin_cookie):
+    """Test 2: Validation failure on creator returns HTTP 400 to both creator and concurrent waiters."""
+    import asyncio
+
+    import portal.routers.admin as admin_module
+
+    async with get_session() as s:
+        ev = await create_event(s, slug="val-fail-test", display_name="Validation Failure Test")
+        event_id = ev.id
+
+    # Invalid room data: missing display_name
+    invalid_data = {
+        "from": "setup",
+        "display_name": "",  # Triggers validation error: "Please enter a room name."
+        "spoken_language": "en",
+        "submission_id": "val-fail-sub-999",
+    }
+    claim_key = (event_id, "val-fail-sub-999")
+
+    async with _client() as client:
+        # Launch overlapping creator and waiter
+        task1 = client.post(
+            f"/admin/events/{event_id}/rooms/new",
+            data=invalid_data,
+            headers={"origin": "http://test"},
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        task2 = client.post(
+            f"/admin/events/{event_id}/rooms/new",
+            data=invalid_data,
+            headers={"origin": "http://test"},
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        resp1, resp2 = await asyncio.gather(task1, task2)
+
+        # Both must return HTTP 400 validation error
+        assert resp1.status_code == 400
+        assert resp2.status_code == 400
+        assert "Give the room a name." in resp1.text
+        assert "Give the room a name." in resp2.text
+
+    # In-flight map must be cleaned up
+    assert claim_key not in admin_module._in_flight_room_creations
+
+
+@pytest.mark.anyio
+async def test_concurrent_room_submission_unexpected_exception_propagates_and_cleans_up(admin_cookie):
+    """Test 4 & 5: Unexpected error in creator propagates to waiters and cleans up in-flight map."""
+    import asyncio
+    from unittest.mock import patch
+
+    import portal.routers.admin as admin_module
+
+    async with get_session() as s:
+        ev = await create_event(s, slug="err-prop-test", display_name="Error Prop Test")
+        event_id = ev.id
+
+    data = {
+        "from": "setup",
+        "display_name": "Error Room",
+        "spoken_language": "en",
+        "languages": ["es"],
+        "delivery_es": "interpreter",
+        "submission_id": "err-sub-11111",
+    }
+    claim_key = (event_id, "err-sub-11111")
+
+    async with _client() as client:
+        with patch("portal.routers.admin.create_room", side_effect=RuntimeError("Simulated DB failure")):
+            task1 = client.post(
+                f"/admin/events/{event_id}/rooms/new",
+                data=data,
+                headers={"origin": "http://test"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            task2 = client.post(
+                f"/admin/events/{event_id}/rooms/new",
+                data=data,
+                headers={"origin": "http://test"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            results = await asyncio.gather(task1, task2, return_exceptions=True)
+            for res in results:
+                assert isinstance(res, RuntimeError)
+                assert "Simulated DB failure" in str(res)
+
+    # In-flight map must be cleaned up, leaving no dangling future
+    assert claim_key not in admin_module._in_flight_room_creations
+
+
+@pytest.mark.anyio
 async def test_setup_edit_event_rejects_empty_name_or_invalid_slug(organizer):
     event_id = organizer["event_id"]
     async with _client() as client:
